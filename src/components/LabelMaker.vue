@@ -158,6 +158,7 @@
           :zoom="zoom"
           @change-bitmap="setBitmap"
           @selection-change="onSelectionChange"
+          @layout-change="scheduleAutosave"
         />
         <div class="label-zoom-panel" role="group" aria-label="Zoom controls">
           <button class="btn-icon" @click="zoomOut" title="Zoom out">
@@ -597,7 +598,7 @@
 </template>
 
 <script setup>
-import { computed, inject, reactive, ref, watch } from "vue";
+import { computed, inject, onMounted, reactive, ref, watch } from "vue";
 import LabelEditor from "./LabelEditor.vue";
 import { PrinterContextKey } from "../printerContext.js";
 
@@ -930,6 +931,49 @@ const exportJson = () => {
   document.body.removeChild(link);
   URL.revokeObjectURL(url);
 };
+
+// --- Autosave to the browser (survives refresh) ----------------------------
+const STORAGE_KEY = "lxprint.design.v1";
+let autosaveTimer = null;
+let restored = false;
+
+const persistDesign = () => {
+  if (!restored) return; // don't overwrite the saved design before we load it
+  try {
+    const payload = {
+      version: 1,
+      labelSize: labelSize.value,
+      elements: editorRef.value?.exportLayout() || [],
+    };
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+  } catch (err) {
+    console.warn("Autosave failed", err);
+  }
+};
+
+const scheduleAutosave = () => {
+  clearTimeout(autosaveTimer);
+  autosaveTimer = setTimeout(persistDesign, 400);
+};
+
+watch(labelSize, scheduleAutosave);
+
+onMounted(() => {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) {
+      const data = JSON.parse(raw);
+      if (data?.labelSize) labelSize.value = data.labelSize;
+      if (Array.isArray(data?.elements) && data.elements.length) {
+        editorRef.value?.importLayout(data.elements);
+      }
+    }
+  } catch (err) {
+    console.warn("Failed to restore saved design", err);
+  } finally {
+    restored = true;
+  }
+});
 
 const onImagePicked = (event) => {
   const file = event.target.files?.[0];

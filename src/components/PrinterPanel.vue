@@ -29,6 +29,19 @@
             <rect x="7" y="13" width="10" height="7" rx="1.5" stroke="currentColor" stroke-width="1.6" />
             <path d="M9 16h6" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
           </svg>
+          <svg v-else-if="printerStatus.state === 'standby'" viewBox="0 0 24 24" fill="none">
+            <path
+              d="M12 2a10 10 0 1 1 0 20 10 10 0 0 1 0-20z"
+              stroke="currentColor"
+              stroke-width="1.6"
+            />
+            <path
+              d="M9.5 9v6M14.5 9v6"
+              stroke="currentColor"
+              stroke-width="1.8"
+              stroke-linecap="round"
+            />
+          </svg>
           <svg v-else viewBox="0 0 24 24" fill="none">
             <path
               d="M7 7l10 10M17 7L7 17"
@@ -190,7 +203,9 @@ const driverOptions = drivers();
 const driver = ref(driverOptions[0]);
 
 const isConnected = computed(() =>
-  ["connected", "connecting", "printing"].includes(printerStatus.state),
+  ["connected", "connecting", "printing", "standby"].includes(
+    printerStatus.state,
+  ),
 );
 
 const currentPrinterName = computed(() => {
@@ -213,7 +228,10 @@ const labelSizes = Array.from({ length: 9 }, (_, idx) => {
 });
 
 const canPrint = computed(
-  () => !!printer.value && printerStatus.state === "connected" && !!bitmap.value,
+  () =>
+    !!printer.value &&
+    ["connected", "standby"].includes(printerStatus.state) &&
+    !!bitmap.value,
 );
 
 const print = () => {

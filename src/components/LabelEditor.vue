@@ -15,7 +15,7 @@
         @touchstart="onStageMouseDown"
       >
         <v-layer>
-          <v-group :config="{ x: stagePadding, y: stagePadding }">
+          <v-group :config="{ x: stagePadding, y: stagePadding, name: 'contentGroup' }">
             <v-rect
               :config="{
                 x: 0,
@@ -108,6 +108,13 @@
                 @touchstart="selectItem(item, $event)"
               />
             </template>
+            <v-group :config="{ name: 'guideLayer', listening: false }">
+              <v-line
+                v-for="(g, i) in guides"
+                :key="'guide-' + i"
+                :config="guideConfig(g)"
+              />
+            </v-group>
           </v-group>
         </v-layer>
         <v-layer :config="{ listening: false }">
@@ -135,7 +142,7 @@
           <v-transformer
             ref="transformerRef"
             :config="transformerConfig"
-            @transform="onTransformerTransform"
+            @transform="onTransformSnap"
           />
         </v-layer>
       </v-stage>
@@ -154,7 +161,11 @@ const props = defineProps({
   zoom: { type: Number, default: 1 },
 });
 
-const emit = defineEmits(["change-bitmap", "selection-change"]);
+const emit = defineEmits([
+  "change-bitmap",
+  "selection-change",
+  "layout-change",
+]);
 
 const stageRef = ref(null);
 const transformerRef = ref(null);
@@ -162,6 +173,10 @@ const elements = ref([]);
 const selectedId = ref(null);
 const imageCache = new Map();
 const stagePadding = 80;
+
+// Active alignment guide lines (page centers/edges + other elements).
+const guides = ref([]);
+const SNAP_THRESHOLD = 6; // content-space px within which edges snap
 
 const baseStageWidth = computed(() => props.width + stagePadding * 2);
 const baseStageHeight = computed(() => props.height + stagePadding * 2);
@@ -520,6 +535,7 @@ const onStageMouseDown = (evt) => {
   const stage = evt.target.getStage();
   if (evt.target === stage) {
     selectedId.value = null;
+    clearGuides();
     syncTransformer();
     emitSelection();
   }
@@ -566,49 +582,130 @@ const updateItem = (item, updates, commit = true) => {
 
 const onDragEnd = (item, evt) => {
   updateItem(item, { x: evt.target.x(), y: evt.target.y() });
+  clearGuides();
 };
 
 const onDragMove = (item, evt) => {
-  updateItem(item, { x: evt.target.x(), y: evt.target.y() }, false);
+  const node = evt.target;
+  applySnap(node, item.id);
+  updateItem(item, { x: node.x(), y: node.y() }, false);
 };
 
-const onTransformerTransform = () => {
-  const transformer = transformerRef.value?.getNode();
-  if (!transformer) return;
-  const node = transformer.nodes()[0];
-  if (!node || !selectedId.value) return;
-  const item = elements.value.find((x) => x.id === selectedId.value);
-  if (!item) return;
-  const scaleX = node.scaleX();
-  const scaleY = node.scaleY();
-  const baseWidth = item.width || node.width();
-  const baseHeight = item.height || node.height();
-  const width = item.type === "line" ? Math.max(1, baseWidth * scaleX) : Math.max(10, baseWidth * scaleX);
-  const height = item.type === "line" ? Math.max(0, baseHeight * scaleY) : Math.max(10, baseHeight * scaleY);
-  node.scaleX(1);
-  node.scaleY(1);
-  if (item.type === "line") {
-    node.points([0, 0, width, height]);
-  } else if (item.type === "ellipse") {
-    node.radiusX(width / 2);
-    node.radiusY(height / 2);
-  } else {
-    node.width(width);
-    node.height(height);
+// --- Alignment guides / snapping ------------------------------------------
+const getContentGroup = () => {
+  const stage = stageRef.value?.getStage();
+  return stage?.findOne(".contentGroup") || null;
+};
+
+// Collect candidate snap positions along one axis: page edges/center plus the
+// edges/center of every other element's bounding box (in content coordinates).
+const collectSnapLines = (axis, excludeId, content) => {
+  const stage = stageRef.value?.getStage();
+  const pageSize = axis === "x" ? props.width : props.height;
+  const lines = [0, pageSize / 2, pageSize];
+  if (!stage || !content) return lines;
+  for (const el of elements.value) {
+    if (el.id === excludeId) continue;
+    const node = stage.findOne(`#${el.id}`);
+    if (!node) continue;
+    const r = node.getClientRect({ relativeTo: content });
+    if (axis === "x") lines.push(r.x, r.x + r.width / 2, r.x + r.width);
+    else lines.push(r.y, r.y + r.height / 2, r.y + r.height);
   }
-  updateItem(
-    item,
-    {
-      x: node.x(),
-      y: node.y(),
-      width,
-      height,
-      rotation: node.rotation(),
-    },
-    false,
+  return lines;
+};
+
+// Snap the node so its nearest edge/center aligns with a target, and record
+// the guide lines to draw. Returns nothing; mutates node position + guides.
+const applySnap = (node, excludeId) => {
+  const content = getContentGroup();
+  if (!content) return;
+  const box = node.getClientRect({ relativeTo: content });
+  const active = [];
+
+  const findBest = (edges, targets) => {
+    let best = null;
+    for (const edge of edges) {
+      for (const target of targets) {
+        const delta = target - edge;
+        if (
+          Math.abs(delta) <= SNAP_THRESHOLD &&
+          (!best || Math.abs(delta) < Math.abs(best.delta))
+        ) {
+          best = { delta, target };
+        }
+      }
+    }
+    return best;
+  };
+
+  const vBest = findBest(
+    [box.x, box.x + box.width / 2, box.x + box.width],
+    collectSnapLines("x", excludeId, content),
   );
-  transformer.forceUpdate();
-  node.getLayer()?.batchDraw();
+  if (vBest) {
+    node.x(node.x() + vBest.delta);
+    active.push({ axis: "x", pos: vBest.target });
+  }
+
+  const hBest = findBest(
+    [box.y, box.y + box.height / 2, box.y + box.height],
+    collectSnapLines("y", excludeId, content),
+  );
+  if (hBest) {
+    node.y(node.y() + hBest.delta);
+    active.push({ axis: "y", pos: hBest.target });
+  }
+
+  guides.value = active;
+};
+
+const clearGuides = () => {
+  if (guides.value.length) guides.value = [];
+};
+
+const guideConfig = (g) => {
+  const strokeWidth = 1 / zoom.value;
+  const base = {
+    stroke: "#ff2d8b",
+    strokeWidth,
+    dash: [4 / zoom.value, 4 / zoom.value],
+    listening: false,
+  };
+  if (g.axis === "x") {
+    return {
+      ...base,
+      points: [g.pos, -stagePadding, g.pos, props.height + stagePadding],
+    };
+  }
+  return {
+    ...base,
+    points: [-stagePadding, g.pos, props.width + stagePadding, g.pos],
+  };
+};
+
+// While resizing, show guides when an edge/center lines up (visual aid only;
+// the actual size is baked on transform end).
+const onTransformSnap = () => {
+  const transformer = transformerRef.value?.getNode();
+  const node = transformer?.nodes()[0];
+  const content = getContentGroup();
+  if (!node || !content) return;
+  const box = node.getClientRect({ relativeTo: content });
+  const active = [];
+  const near = (value, targets) =>
+    targets.find((t) => Math.abs(t - value) <= SNAP_THRESHOLD);
+  const vTargets = collectSnapLines("x", selectedId.value, content);
+  const hTargets = collectSnapLines("y", selectedId.value, content);
+  for (const edge of [box.x, box.x + box.width / 2, box.x + box.width]) {
+    const hit = near(edge, vTargets);
+    if (hit !== undefined) active.push({ axis: "x", pos: hit });
+  }
+  for (const edge of [box.y, box.y + box.height / 2, box.y + box.height]) {
+    const hit = near(edge, hTargets);
+    if (hit !== undefined) active.push({ axis: "y", pos: hit });
+  }
+  guides.value = active;
 };
 
 const onTransformEnd = (item, evt) => {
@@ -628,6 +725,7 @@ const onTransformEnd = (item, evt) => {
     height,
     rotation: node.rotation(),
   });
+  clearGuides();
   nextTick(syncTransformer);
 };
 
@@ -774,6 +872,10 @@ const emitBitmap = () => {
   const transformer = transformerRef.value?.getNode();
   const wasVisible = transformer?.visible();
   if (transformer) transformer.visible(false);
+  // Never bake alignment guides into the printable bitmap.
+  const guideLayer = stage.findOne(".guideLayer");
+  const guidesWereVisible = guideLayer?.visible();
+  if (guideLayer) guideLayer.visible(false);
   const prevScale = stage.scale();
   const prevPos = stage.position();
   stage.scale({ x: 1, y: 1 });
@@ -788,6 +890,7 @@ const emitBitmap = () => {
   stage.scale(prevScale);
   stage.position(prevPos);
   if (transformer) transformer.visible(wasVisible);
+  if (guideLayer) guideLayer.visible(guidesWereVisible);
   const output = document.createElement("canvas");
   output.width = canvas.width;
   output.height = canvas.height;
@@ -870,6 +973,7 @@ watch(
 
 watch(elements, () => {
   nextTick(emitBitmap);
+  emit("layout-change");
 });
 
 watch(
