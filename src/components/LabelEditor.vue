@@ -99,7 +99,11 @@
                 @touchstart="selectItem(item, $event)"
               />
               <v-image
-                v-else-if="item.type === 'image' || item.type === 'barcode'"
+                v-else-if="
+                  item.type === 'image' ||
+                  item.type === 'barcode' ||
+                  item.type === 'qrcode'
+                "
                 :config="imageConfig(item)"
                 @dragmove="onDragMove(item, $event)"
                 @dragend="onDragEnd(item, $event)"
@@ -154,6 +158,7 @@
 import { computed, nextTick, onMounted, onBeforeUnmount, ref, watch } from "vue";
 import Konva from "konva";
 import JsBarcode from "jsbarcode";
+import QRCode from "qrcode";
 
 const props = defineProps({
   width: { type: Number, required: true },
@@ -190,6 +195,9 @@ const historyIndex = ref(-1);
 
 const transformerConfig = {
   rotateEnabled: true,
+  // keepRatio is set per-selection in syncTransformer; "inverted" lets Shift
+  // temporarily free the aspect ratio while dragging a corner handle.
+  shiftBehavior: "inverted",
   enabledAnchors: [
     "top-left",
     "top-right",
@@ -319,6 +327,57 @@ const addBarcode = () => {
   });
 };
 
+// Render a QR code to a crisp black/white PNG data URL. Uses the low-level
+// matrix API so it stays synchronous, like the barcode path.
+const buildQrDataUrl = (value, ecLevel) => {
+  try {
+    const qr = QRCode.create(value || " ", {
+      errorCorrectionLevel: ecLevel || "M",
+    });
+    const size = qr.modules.size;
+    const data = qr.modules.data;
+    const quiet = 4; // quiet-zone width in modules (spec minimum)
+    const total = size + quiet * 2;
+    const cell = Math.max(4, Math.floor(512 / total));
+    const px = total * cell;
+    const canvas = document.createElement("canvas");
+    canvas.width = px;
+    canvas.height = px;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return "";
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, px, px);
+    ctx.fillStyle = "#000000";
+    for (let r = 0; r < size; r++) {
+      for (let c = 0; c < size; c++) {
+        if (data[r * size + c]) {
+          ctx.fillRect((c + quiet) * cell, (r + quiet) * cell, cell, cell);
+        }
+      }
+    }
+    return canvas.toDataURL("image/png");
+  } catch {
+    return "";
+  }
+};
+
+const addQrcode = () => {
+  const value = "https://example.com";
+  const src = buildQrDataUrl(value, "M");
+  addElement({
+    id: crypto.randomUUID(),
+    type: "qrcode",
+    x: Math.max(20, props.width / 2 - 60),
+    y: Math.max(20, props.height / 2 - 60),
+    width: 120,
+    height: 120,
+    qrValue: value,
+    qrEcLevel: "M",
+    src,
+    rotation: 0,
+  });
+};
+
 const addImage = (payload, size) => {
   const isObject = payload && typeof payload === "object";
   const src = isObject ? payload.src : payload;
@@ -440,6 +499,17 @@ const normalizeElement = (item) => {
       src: item.src || buildBarcodeDataUrl(barcodeValue, barcodeType),
     };
   }
+  if (item.type === "qrcode") {
+    const qrValue = item.qrValue || "https://example.com";
+    const qrEcLevel = item.qrEcLevel || "M";
+    return {
+      ...base,
+      type: "qrcode",
+      qrValue,
+      qrEcLevel,
+      src: item.src || buildQrDataUrl(qrValue, qrEcLevel),
+    };
+  }
   if (item.type === "image") {
     return {
       ...base,
@@ -550,8 +620,13 @@ const syncTransformer = () => {
   const item = elements.value.find((x) => x.id === selectedId.value);
   if (item && item.type === "image") {
     transformer.keepRatio(item.lockAspect !== false);
+  } else if (item && item.type === "line") {
+    transformer.keepRatio(false); // a line has no meaningful aspect
   } else {
-    transformer.keepRatio(false);
+    // Corner handles keep the aspect ratio (QR stays square, text/shapes keep
+    // proportion); the side handles still stretch a single axis. Hold Shift to
+    // temporarily free the ratio.
+    transformer.keepRatio(true);
   }
   transformer.forceUpdate();
   if (selectedNode && selectedNode.getLayer()) {
@@ -866,6 +941,14 @@ const updateBarcodeSrc = (item) => {
   ensureImage({ ...item, src });
 };
 
+const updateQrSrc = (item) => {
+  if (item.type !== "qrcode") return;
+  const src = buildQrDataUrl(item.qrValue, item.qrEcLevel);
+  updateItem(item, { src }, false);
+  imageCache.delete(item.id);
+  ensureImage({ ...item, src });
+};
+
 const emitBitmap = () => {
   const stage = stageRef.value?.getStage();
   if (!stage) return;
@@ -980,7 +1063,12 @@ watch(
   elements,
   (items) => {
     items.forEach((item) => {
-      if (item.type === "image" || item.type === "barcode") ensureImage(item);
+      if (
+        item.type === "image" ||
+        item.type === "barcode" ||
+        item.type === "qrcode"
+      )
+        ensureImage(item);
     });
   },
   { deep: true },
@@ -992,6 +1080,7 @@ defineExpose({
   addEllipse,
   addLine,
   addBarcode,
+  addQrcode,
   addImage,
   deleteSelected,
   duplicateSelected,
@@ -1021,7 +1110,12 @@ defineExpose({
     emitSelection();
     nextTick(() => {
       normalized.forEach((item) => {
-        if (item.type === "image" || item.type === "barcode") ensureImage(item);
+        if (
+        item.type === "image" ||
+        item.type === "barcode" ||
+        item.type === "qrcode"
+      )
+        ensureImage(item);
       });
       emitBitmap();
     });
@@ -1036,6 +1130,13 @@ defineExpose({
         Object.prototype.hasOwnProperty.call(updates, "barcodeType"))
     ) {
       updateBarcodeSrc({ ...item, ...updates });
+    }
+    if (
+      item.type === "qrcode" &&
+      (Object.prototype.hasOwnProperty.call(updates, "qrValue") ||
+        Object.prototype.hasOwnProperty.call(updates, "qrEcLevel"))
+    ) {
+      updateQrSrc({ ...item, ...updates });
     }
     await nextTick();
     syncTransformer();

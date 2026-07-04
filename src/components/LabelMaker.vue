@@ -32,6 +32,21 @@
           </span>
           Barcode
         </button>
+        <button class="btn-icon" @click="addQrcode">
+          <span class="icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none">
+              <rect x="4" y="4" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.6" />
+              <rect x="14" y="4" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.6" />
+              <rect x="4" y="14" width="6" height="6" rx="1" stroke="currentColor" stroke-width="1.6" />
+              <rect x="14" y="14" width="2" height="2" fill="currentColor" />
+              <rect x="18" y="14" width="2" height="2" fill="currentColor" />
+              <rect x="16" y="16" width="2" height="2" fill="currentColor" />
+              <rect x="14" y="18" width="2" height="2" fill="currentColor" />
+              <rect x="18" y="18" width="2" height="2" fill="currentColor" />
+            </svg>
+          </span>
+          QR
+        </button>
         <button class="btn-icon" @click="addRect">
           <span class="icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none">
@@ -80,8 +95,8 @@
         <button class="btn-icon" @click="undo">
           <span class="icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none">
-              <path d="M7 8H4V5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-              <path d="M4 8a8 8 0 1 0 2.3-5.7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M3 3v5h5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
           </span>
           Undo
@@ -89,8 +104,8 @@
         <button class="btn-icon" @click="redo">
           <span class="icon" aria-hidden="true">
             <svg viewBox="0 0 24 24" fill="none">
-              <path d="M17 8h3V5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
-              <path d="M20 8a8 8 0 1 1-2.3-5.7" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" />
+              <path d="M21 12a9 9 0 1 1-9-9 9.75 9.75 0 0 1 6.74 2.74L21 8" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+              <path d="M21 3v5h-5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
             </svg>
           </span>
           Redo
@@ -516,6 +531,25 @@
             </div>
           </template>
 
+          <template v-else-if="selected.type === 'qrcode'">
+            <div class="prop-section">QR Code</div>
+            <div class="prop-field">
+              <label class="prop-label">Value</label>
+              <textarea v-model="form.qrValue" rows="2" @input="applyForm" />
+            </div>
+            <div class="prop-grid prop-grid-2">
+              <div class="prop-field">
+                <label class="prop-label">Correction</label>
+                <select v-model="form.qrEcLevel" @change="applyForm">
+                  <option value="L">Low (7%)</option>
+                  <option value="M">Medium (15%)</option>
+                  <option value="Q">Quartile (25%)</option>
+                  <option value="H">High (30%)</option>
+                </select>
+              </div>
+            </div>
+          </template>
+
           <template v-else>
             <div class="prop-section">Style</div>
             <div class="prop-grid prop-grid-2">
@@ -684,6 +718,8 @@ const form = reactive({
   imageBrightness: 0,
   barcodeType: "CODE128",
   barcodeValue: "123456789012",
+  qrValue: "https://example.com",
+  qrEcLevel: "M",
 });
 
 const zoomLabel = computed(() => `${Math.round(zoom.value * 100)}%`);
@@ -738,6 +774,8 @@ const syncForm = (item) => {
   }
   form.barcodeType = item.barcodeType || "CODE128";
   form.barcodeValue = item.barcodeValue || "123456789012";
+  form.qrValue = item.qrValue || "https://example.com";
+  form.qrEcLevel = item.qrEcLevel || "M";
 };
 
 const applyForm = () => {
@@ -777,6 +815,11 @@ const applyForm = () => {
       barcodeType: form.barcodeType,
       barcodeValue: form.barcodeValue,
     });
+  } else if (selected.value.type === "qrcode") {
+    Object.assign(updates, {
+      qrValue: form.qrValue,
+      qrEcLevel: form.qrEcLevel,
+    });
   } else {
     Object.assign(updates, {
       fill: form.fill,
@@ -796,6 +839,15 @@ const applyForm = () => {
       updates.width = Math.round(updates.height * selected.value.aspect);
       form.width = updates.width;
     }
+  }
+
+  if (selected.value.type === "qrcode") {
+    // QR codes are square: keep whichever dimension the user last edited.
+    const side = lastDim.value === "height" ? updates.height : updates.width;
+    updates.width = side;
+    updates.height = side;
+    form.width = side;
+    form.height = side;
   }
 
   editorRef.value?.updateSelected(updates);
@@ -900,6 +952,7 @@ const addRect = () => editorRef.value?.addRect();
 const addEllipse = () => editorRef.value?.addEllipse();
 const addLine = () => editorRef.value?.addLine();
 const addBarcode = () => editorRef.value?.addBarcode();
+const addQrcode = () => editorRef.value?.addQrcode();
 const deleteSelected = () => editorRef.value?.deleteSelected();
 const duplicateSelected = () => editorRef.value?.duplicateSelected();
 const raiseSelected = () => editorRef.value?.raiseSelected();
